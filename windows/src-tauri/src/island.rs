@@ -83,6 +83,17 @@ impl PollGate {
         self.ignoring.store(false, Ordering::Relaxed);
     }
 
+    /// Called on the UI thread, after any earlier collapse command. In-flight
+    /// cursor work is discarded once the strip owns input again.
+    fn apply_cursor_acceptance(&self, accept: bool, apply: impl FnOnce(bool) -> bool) {
+        if self.collapsed.load(Ordering::Relaxed) {
+            return;
+        }
+        if self.ignoring.load(Ordering::Relaxed) == accept && apply(!accept) {
+            self.ignoring.store(!accept, Ordering::Relaxed);
+        }
+    }
+
     pub fn set_active(&self, on: bool) {
         let mut guard = self.active.lock().unwrap();
         *guard = on;
@@ -425,6 +436,9 @@ pub fn spawn_cursor_poll(app: AppHandle, gate: Arc<PollGate>) {
             let mut ticks: u32 = 0;
             while gate.is_active() {
                 std::thread::sleep(Duration::from_millis(period));
+                if !gate.is_active() {
+                    break;
+                }
 
                 // Monitors get plugged in, unplugged, rearranged and rescaled, and
                 // an island pinned to coordinates that no longer exist is an island
@@ -491,10 +505,16 @@ pub fn spawn_cursor_poll(app: AppHandle, gate: Arc<PollGate>) {
                     && y <= size.1;
 
                 let accept = on_island || dragging;
-                if gate.ignoring.load(Ordering::Relaxed) == accept {
-                    gate.ignoring.store(!accept, Ordering::Relaxed);
-                    let _ = win.set_ignore_cursor_events(!accept);
-                }
+                // Serialize native input changes with set_collapsed on the UI
+                // thread. A tick already in flight when the island hides must
+                // never make its wake strip click-through after the poll parks.
+                let input_gate = gate.clone();
+                let input_window = win.clone();
+                let _ = app.run_on_main_thread(move || {
+                    input_gate.apply_cursor_acceptance(accept, |ignore| {
+                        input_window.set_ignore_cursor_events(ignore).is_ok()
+                    });
+                });
 
                 let _ = win.emit("cursor", CursorPayload { x, y });
             }
@@ -538,5 +558,30 @@ pub fn refresh_click_through(app: &AppHandle, gate: &PollGate) {
 pub fn set_ignore_cursor(app: &AppHandle, ignore: bool) {
     if let Some(win) = window(app) {
         let _ = win.set_ignore_cursor_events(ignore);
+    }
+}
+
+#[cfg(test)]
+mod input_tests {
+    use super::*;
+
+    #[test]
+    fn a_cursor_tick_queued_before_collapse_cannot_disable_the_wake_strip() {
+        let gate = PollGate::new();
+        gate.collapsed.store(false, Ordering::Relaxed);
+        gate.set_active(true);
+        // The poll saw a cursor outside. Before its UI task runs, the collapse
+        // command parks the poll and restores the strip's native input.
+        let accept_from_old_tick = false;
+        gate.collapsed.store(true, Ordering::Relaxed);
+        gate.set_active(false);
+        gate.forget_ignore_state();
+        gate.apply_cursor_acceptance(accept_from_old_tick, |_| panic!("must not change native input"));
+        assert!(!gate.ignoring.load(Ordering::Relaxed));
+        assert!(!gate.is_active());
+        // Waking the island permits the next fresh tick to update click-through.
+        gate.collapsed.store(false, Ordering::Relaxed);
+        gate.apply_cursor_acceptance(false, |ignore| { assert!(ignore); true });
+        assert!(gate.ignoring.load(Ordering::Relaxed));
     }
 }

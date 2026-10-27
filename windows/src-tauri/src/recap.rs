@@ -167,6 +167,7 @@ impl Draft {
 
 pub struct Recap {
     path: PathBuf,
+    writer: Option<crate::snapshot_writer::SnapshotWriter<History>>,
     history: History,
     drafts: HashMap<String, Draft>,
     /// Permission request ID → agent, until the island answers it.
@@ -181,6 +182,7 @@ impl Recap {
         let history = read_history(&path);
         let mut recap = Self {
             path,
+            writer: None,
             history,
             drafts: HashMap::new(),
             requests: HashMap::new(),
@@ -389,6 +391,10 @@ impl Recap {
     }
 
     fn save(&self) {
+        if let Some(writer) = &self.writer {
+            writer.submit(self.history.clone());
+            return;
+        }
         if let Err(err) = write_history(&self.path, &self.history) {
             note(format!("could not save the weekly recap history: {err}"));
         }
@@ -685,7 +691,22 @@ fn now() -> i64 {
 }
 
 pub fn load() -> Store {
-    Store(Mutex::new(Recap::load(platform::local_dir().join("recap.json"), now())))
+    let path = platform::local_dir().join("recap.json");
+    let mut recap = Recap::load(path.clone(), now());
+    recap.writer = Some(crate::snapshot_writer::SnapshotWriter::new(move |history| {
+        if let Err(err) = write_history(&path, &history) {
+            note(format!("could not save the weekly recap history: {err}"));
+        }
+    }));
+    Store(Mutex::new(recap))
+}
+
+/// Drain the most recent snapshot before the process exits. The background
+/// writer never needs the Recap mutex, so joining it cannot block on this lock.
+pub fn shutdown(app: &AppHandle) {
+    if let Some(store) = app.try_state::<Store>() {
+        drop(store.lock().writer.take());
+    }
 }
 
 /// Called by the relay server for every hook event. An agent starting work is
@@ -793,6 +814,30 @@ mod tests {
 
     fn on_disk(path: &Path) -> Value {
         serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn background_history_drains_the_last_clear_and_preferences_on_shutdown() {
+        let dir = scratch("background");
+        let path = dir.join("recap.json");
+        let mut recap = Recap::load(path.clone(), T0);
+        let destination = path.clone();
+        recap.writer = Some(crate::snapshot_writer::SnapshotWriter::new(move |history| {
+            write_history(&destination, &history).unwrap();
+        }));
+        recap.observe(&event("UserPromptSubmit", "s", json!({})), T0);
+        recap.observe(&event("Stop", "s", json!({})), T0 + 10);
+        recap.record_decision("request", "allow", T0 + 11);
+        recap.clear();
+        recap.set_hide_projects(false);
+        recap.mark_shown("2026-10-26");
+        drop(recap.writer.take());
+        let saved = on_disk(&path);
+        assert_eq!(saved["turns"], json!([]));
+        assert_eq!(saved["decisions"], json!([]));
+        assert_eq!(saved["prefs"]["hideProjects"], false);
+        assert_eq!(saved["prefs"]["lastShownWeek"], "2026-10-26");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

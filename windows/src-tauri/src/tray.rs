@@ -59,7 +59,11 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
             "quit" => app.exit(0),
             "settings" => crate::show_settings_window(app),
             // The Coucou window: dictation, notes and every setting.
-            "open" => crate::show_hub(app, None),
+            "open" => {
+                crate::show_hub(app, None);
+                // Also recover a hidden island, independently of its hover strip.
+                let _ = app.emit_to(WINDOW_LABEL, "tray", "open");
+            }
             id => {
                 let _ = app.emit_to(WINDOW_LABEL, "tray", id.to_string());
             }

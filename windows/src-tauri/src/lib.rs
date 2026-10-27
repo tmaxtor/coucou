@@ -31,6 +31,7 @@ mod session_window;
 mod settings;
 mod shortcuts;
 mod sounds;
+mod snapshot_writer;
 mod speech;
 mod spotify;
 mod tray;
@@ -166,6 +167,9 @@ fn language_changed(app: &AppHandle) {
 fn set_collapsed(app: AppHandle, shared: State<Shared>, collapsed: bool) {
     let pref = shared.settings.lock().unwrap().screen.clone();
     shared.gate.collapsed.store(collapsed, Ordering::Relaxed);
+    if collapsed {
+        shared.gate.set_active(false);
+    }
     island::apply_geometry(&app, &pref, collapsed);
     // The wake strip must always take the mouse, and a resize invalidates the flag.
     island::refresh_click_through(&app, &shared.gate);
@@ -491,8 +495,8 @@ async fn codex_plan_usage() -> Option<serde_json::Value> {
 
 #[tauri::command]
 fn approval_decision(app: AppHandle, request_id: String, decision: String) {
-    recap::record_decision(&app, &request_id, &decision);
     pipe::answer(&app, &request_id, &decision);
+    recap::record_decision(&app, &request_id, &decision);
 }
 
 /// An option picked on the island for a question Claude Code asked.
@@ -1031,6 +1035,7 @@ pub fn run() {
             if let tauri::RunEvent::Exit = event {
                 phone_link::stop_on_exit(app);
                 notes::shutdown(app);
+                recap::shutdown(app);
                 // GOWA started by Coucou stops with it; the conversations were only in memory.
                 whatsapp::shutdown();
             }

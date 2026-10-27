@@ -27,6 +27,11 @@ let last = performance.now();
 const start = performance.now();
 /** The Coucou window is on screen, as Rust last said (`setWindowShown`). */
 let windowShown = true;
+// One listener for the whole hub, never a closure retaining a removed canvas.
+let pointer: { x: number; y: number } | null = null;
+window.addEventListener("pointermove", (event) => {
+  pointer = { x: event.clientX, y: event.clientY };
+});
 
 function running(): boolean {
   return shouldAnimate(live.size, document.visibilityState, windowShown);
@@ -346,19 +351,15 @@ export function liveMochi(canvas: HTMLCanvasElement, color = "#F5F6F8", state: B
   engine.bodyColor = hexToRGB(color);
   engine.setState(state, true);
   canvas.addEventListener("click", () => engine.slap());
-  let mouse: { x: number; y: number } | null = null;
-  window.addEventListener("pointermove", (e) => {
-    const r = canvas.getBoundingClientRect();
-    mouse = { x: e.clientX - (r.left + r.width / 2), y: e.clientY - (r.top + r.height / 2) };
-  });
   add({
     el: canvas,
     draw(dt) {
       const { w, h, ctx } = fit(canvas);
       if (!ctx || w === 0) return;
-      if (mouse) {
-        engine.lookX = Math.max(-1, Math.min(1, mouse.x / 300));
-        engine.lookY = Math.max(-1, Math.min(1, mouse.y / 300));
+      if (pointer) {
+        const r = canvas.getBoundingClientRect();
+        engine.lookX = Math.max(-1, Math.min(1, (pointer.x - r.left - r.width / 2) / 300));
+        engine.lookY = Math.max(-1, Math.min(1, (pointer.y - r.top - r.height / 2) / 300));
       }
       engine.update(dt);
       ctx.clearRect(0, 0, w, h);

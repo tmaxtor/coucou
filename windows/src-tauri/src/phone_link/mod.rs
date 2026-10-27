@@ -75,8 +75,8 @@ impl Host for TauriHost {
     fn decide(&self, request_id: &str, allow: bool) {
         let word = if allow { "allow" } else { "deny" };
         log::line(format!("phone link: decision id={request_id} {word}"));
-        recap::record_decision(&self.app, request_id, word);
         pipe::answer(&self.app, request_id, word);
+        recap::record_decision(&self.app, request_id, word);
         // The card on the island closes; it was answered elsewhere.
         let _ = self.app.emit_to(island::WINDOW_LABEL, "phone-link-decided", request_id.to_string());
     }

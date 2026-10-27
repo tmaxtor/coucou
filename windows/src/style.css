@@ -65,7 +65,9 @@ body {
   transform: translateX(-50%);
   width: 240px;
   height: 6px;
-  background: transparent;
+  /* Alpha zero can fail native hit testing on Windows. Keep one alpha step
+     so the parked window still receives the mouse that wakes the island. */
+  background: rgba(0, 0, 0, 0.004);
 }
 
 /* ── Island ─────────────────────────────────────────────────────────────── */
